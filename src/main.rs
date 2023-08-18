@@ -28,11 +28,14 @@ struct Execution {
 
 fn main() -> Result<(), Error> {
     let args: Vec<String> = std::env::args().collect();
-    let path = args.get(1).expect("expected a file path");
-    let user_id = args.get(2).expect("expected a user_id");
-    let paths = std::fs::read_dir(format!("{}{}", path, user_id)).unwrap().map(|path| path.unwrap().path());
+    //let path = args.get(1).expect("expected a file path");
+    //let user_id = args.get(2).expect("expected a user_id");
+    let paths = std::fs::read_dir("trades").unwrap().map(|path| path.unwrap().path());
     let mut account_executions: HashMap<String, HashMap<String,Vec<Execution>>> = HashMap::new();
     for path in paths {
+        if path.to_str().unwrap() == "trades/.DS_Store" {
+            continue;
+        }
         let mut workbook: Xlsx<_> = open_workbook(path.to_str().unwrap())?;
         let range = workbook.worksheet_range("Sheet1")
             .ok_or(Error::Msg("Cannot find 'Sheet1'"))??;
@@ -40,6 +43,7 @@ fn main() -> Result<(), Error> {
         rows.next();
         for r in rows {
             let instrument = r[0].to_string();
+            let instrument_str = instrument.split_whitespace().next().unwrap_or("");
             let time = r[4].to_string();
             let _datetime = &r[4].as_datetime().unwrap();
             let action = r[1].get_string().unwrap();
@@ -48,7 +52,7 @@ fn main() -> Result<(), Error> {
             let commission = r[10].to_string()[1..].parse().unwrap();
             let account_display_name = r[12].to_string();
             let account = account_executions.entry(account_display_name).or_default();
-            account.entry(instrument.to_string())
+            account.entry(instrument_str.to_string())
                 .and_modify(|e| {
                     e.push(Execution {
                         time: time.to_string(),
@@ -56,7 +60,7 @@ fn main() -> Result<(), Error> {
                         action: action.to_string(),
                         quantity,
                         commission,
-                        instrument: instrument.to_string(),
+                        instrument: instrument_str.to_string(),
                     });
                 })
                 .or_insert_with(|| {
@@ -66,7 +70,7 @@ fn main() -> Result<(), Error> {
                         action: action.to_string(),
                         quantity,
                         commission,
-                        instrument: instrument.to_string(),
+                        instrument: instrument_str.to_string(),
                     }])
                 });
         }
@@ -170,31 +174,48 @@ fn main() -> Result<(), Error> {
             }
         }
     }
+    println!(
+"with role_id as (
+    select id from roles
+    where name = 'super_admin'
+)
+insert into users (id, username, password_hash, email, role_id)
+values ('6982c6df-3d03-4583-8fa9-07386cf25f80', 'jhg', '$argon2id$v=19$m=15000,t=2,p=1$xjnT0gsfJCccXoCt8yD1HQ$rDkvWPpNR+yYNQ+U7+0U6RCLcgG/EnPPE3riQ615AFM', 'g@jinz.co', (select id from role_id))
+on conflict (\"id\") do nothing;\n"
+        );
     for (account, account_trades) in trades {
         println!(
 "insert into accounts (user_id, name, sim)
 values ('{0}', '{1}', {2})
-on conflict (\"name\") do nothing;\n", user_id, account, account == "Sim101"
+on conflict (\"name\") do nothing;\n", "6982c6df-3d03-4583-8fa9-07386cf25f80", account, account == "Sim101"
 );
         for trade in account_trades {
             let executions = trade.executions;
             let executions_string = executions
                 .iter()
                 .map(|e| {
-                    format!("((select id from t_id), {}, {}, {}, '{}', {}, '{}')", e.time, e.commission, e.price, e.action, e.quantity, e.instrument)
+                    format!("((select id from t_id), (select id from i_id), {}, {}, {}, '{}', {})", e.time, e.commission, e.price, e.action.to_lowercase() == "buy", e.quantity)
                 })
                 .collect::<Vec<String>>()
                 .join(",\n");
             println!(
+"insert into instruments (code, price_per_point)
+values ('{0}', {1})
+on conflict (\"code\") do nothing;\n", trade.instrument, point_prices()[&trade.instrument.as_str()]);
+
+            println!(
 "with acc_id as (
     select id from accounts
     where name = '{0}'
+), i_id as (
+    select id from instruments
+    where code = '{1}'
 ), t_id as (
-    insert into trades (account_id, instrument, entry_time, exit_time, commission, pnl, short)
-    values ((select id from acc_id), '{1}', {2}, {3}, {4}, {5}, {6})
+    insert into trades (account_id, instrument_id, entry_time, exit_time, commissions, pnl, is_short)
+    values ((select id from acc_id), (select id from i_id), {2}, {3}, {4}, {5}, {6})
     returning id
 )
-insert into executions (trade_id, time, commission, price, action, quantity, instrument)
+insert into executions (trade_id, instrument_id, fill_time, commissions, price, is_buy, quantity)
 values {7};\n\n", account, trade.instrument, trade.entry_time, trade.exit_time, trade.commission, trade.pnl, !trade.long, executions_string
 );
         }
@@ -202,14 +223,27 @@ values {7};\n\n", account, trade.instrument, trade.entry_time, trade.exit_time, 
     Ok(())
 }
 
+fn point_prices() -> HashMap<&'static str, f64> {
+    HashMap::from([
+                  ("ES", 50.0),
+                  ("MES", 5.0),
+                  ("NQ", 20.0),
+                  ("MNQ", 2.0),
+    ])
+}
+
+fn tick_prices() -> HashMap<&'static str, f64> {
+    HashMap::from([
+                  ("ES", 12.5),
+                  ("MES", 1.25),
+                  ("NQ", 5.0),
+                  ("MNQ", 0.5),
+    ])
+}
+
 fn calculate_pnl(entry: f64, exit: f64, quantity: f64, instrument: &str, long: bool) -> f64 {
-    let tick_prices: HashMap<&str, f64> = HashMap::from([
-        ("es", 12.5),
-        ("mes", 1.25),
-        ("nq", 5.0),
-        ("mnq", 0.5),
-    ]);
+    
     let ticks = quantity * 4.0 * (if long {1.0} else {-1.0});
-    return (exit - entry) * ticks * tick_prices[instrument.to_lowercase().split_once(' ').unwrap().0];
+    return (exit - entry) * ticks * tick_prices()[instrument];
 }
 
