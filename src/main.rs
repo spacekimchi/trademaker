@@ -27,7 +27,7 @@ struct Execution {
 }
 
 fn main() -> Result<(), Error> {
-    let args: Vec<String> = std::env::args().collect();
+    let _args: Vec<String> = std::env::args().collect();
     //let path = args.get(1).expect("expected a file path");
     //let user_id = args.get(2).expect("expected a user_id");
     let paths = std::fs::read_dir("trades").unwrap().map(|path| path.unwrap().path());
